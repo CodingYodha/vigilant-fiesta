@@ -8,8 +8,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tavily import AsyncTavilyClient
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
+import json
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +55,7 @@ class ResearchState(TypedDict):
     escalation_triggered: bool
     escalation_results: Dict[str, List[Any]]
     risk_signals: List[str]
+    classification: Dict[str, Any] # Store the parsed JSON output from Claude
 
 class SearchResult(BaseModel):
     title: str
@@ -220,14 +223,10 @@ async def run_escalation_searches(state: ResearchState) -> ResearchState:
 
 async def extract_risk_signals(state: ResearchState) -> ResearchState:
     logger.info("Node: extract_risk_signals")
-    # A simple mock extraction for now. In reality, we'd pass all `search_results`
-    # and `escalation_results` to an LLM like Anthropic to generate these signals.
-    
+    # A simple mock extraction for now.
     signals = []
     if state.get("escalation_triggered", False):
         signals.append("Automated escalation was triggered due to negative keywords found in base search.")
-        
-        # Check escalation results specifically
         if "escalation_results" in state:
             for cat, results in state["escalation_results"].items():
                 if results:
@@ -238,6 +237,80 @@ async def extract_risk_signals(state: ResearchState) -> ResearchState:
         
     return {"risk_signals": signals}
 
+async def classify_risks(state: ResearchState) -> ResearchState:
+    logger.info("Node: classify_risks")
+    client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    
+    if not client.api_key:
+        logger.warning("ANTHROPIC_API_KEY missing. Returning fallback classification.")
+        return {"classification": {"error": "API key missing"}}
+        
+    # Combine all search text
+    combined_text = ""
+    for category, results in state.get("search_results", {}).items():
+        combined_text += f"\n--- {category.upper()} ---\n"
+        for r in results:
+            combined_text += f"Title: {r['title']}\nContent: {r['content']}\n"
+            
+    if "escalation_results" in state:
+        for category, results in state["escalation_results"].items():
+            combined_text += f"\n--- ESCALATION: {category.upper()} ---\n"
+            for r in results:
+                 combined_text += f"Title: {r['title']}\nContent: {r['content']}\n"
+                 
+    # Truncate to avoid massive token usage during testing
+    combined_text = combined_text[:3000]
+
+    system_prompt = """You are a credit risk analyst. Given web search results about a company and its promoters, extract structured risk signals. Always respond in valid JSON only."""
+    
+    user_prompt = f"""Search results: {combined_text}
+Company: {state['company_name']}
+Promoters: {', '.join(state['promoter_names'])}
+
+Respond ONLY with this JSON:
+{{
+  "promoter_risk": "LOW" | "MEDIUM" | "HIGH",
+  "promoter_risk_reason": "one line explanation",
+  "litigation_risk": "NONE" | "HISTORICAL" | "ACTIVE",
+  "litigation_detail": "specific case details if found, else null",
+  "sector_risk": "TAILWIND" | "NEUTRAL" | "HEADWIND",
+  "sector_reason": "one line",
+  "key_findings": ["finding 1", "finding 2"],
+  "sources": ["url1", "url2"]
+}}"""
+
+    try:
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1000,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        
+        # Raw text from Claude
+        raw_output = response.content[0].text
+        
+        # safely parse JSON
+        try:
+            # Often LLMs wrap JSON in markdown markdown blocks
+            if "```json" in raw_output:
+                json_str = raw_output.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_output:
+                json_str = raw_output.split("```")[1].split("```")[0].strip()
+            else:
+                json_str = raw_output.strip()
+                
+            parsed_json = json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse Claude JSON output: {raw_output}")
+            parsed_json = {"error": "Failed to parse JSON", "raw_output": raw_output}
+            
+        return {"classification": parsed_json}
+        
+    except Exception as e:
+        logger.error(f"Anthropic API error: {e}")
+        return {"classification": {"error": str(e)}}
+
 # --- Compile Graph ---
 workflow = StateGraph(ResearchState)
 
@@ -245,12 +318,14 @@ workflow.add_node("run_base_searches", run_base_searches)
 workflow.add_node("check_escalation", check_escalation)
 workflow.add_node("run_escalation_searches", run_escalation_searches)
 workflow.add_node("extract_risk_signals", extract_risk_signals)
+workflow.add_node("classify_risks", classify_risks)
 
 workflow.set_entry_point("run_base_searches")
 workflow.add_edge("run_base_searches", "check_escalation")
 workflow.add_conditional_edges("check_escalation", should_escalate)
 workflow.add_edge("run_escalation_searches", "extract_risk_signals")
-workflow.add_edge("extract_risk_signals", END)
+workflow.add_edge("extract_risk_signals", "classify_risks")
+workflow.add_edge("classify_risks", END)
 
 research_graph = workflow.compile()
 
@@ -262,10 +337,35 @@ async def start_research(request: ResearchRequest):
     jobs[job_id] = {
         "status": "queued",
         "request_data": request.model_dump(),
-        "result": None
+        "result": None,
+        "classification": None
     }
     
-    # Normally we would kick off an async background task here
+    # In a real app, this would be kicked off in a Celery/background task
+    # For now, we'll run it asynchronously in the background via asyncio.create_task
+    # to avoid blocking the HTTP response.
+    async def process_job():
+        try:
+            initial_state = {
+                "company_name": request.company_name,
+                "promoter_names": request.promoter_names,
+                "industry": request.industry,
+                "search_results": {},
+                "escalation_triggered": False,
+                "escalation_results": {},
+                "risk_signals": [],
+                "classification": {}
+            }
+            final_state = await research_graph.ainvoke(initial_state)
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["result"] = final_state["risk_signals"]
+            jobs[job_id]["classification"] = final_state.get("classification", {})
+        except Exception as e:
+            logger.error(f"Job {job_id} failed: {e}")
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["result"] = {"error": str(e)}
+
+    asyncio.create_task(process_job())
     
     return ResearchResponse(job_id=job_id, status="queued")
 
@@ -275,10 +375,22 @@ async def get_research_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     
     job_data = jobs[job_id]
+    
+    # You can return the full classification inside the result object or top-level.
+    # Let's include both signals and classification in the generic result dict.
+    result_payload = None
+    if job_data["status"] == "completed":
+        result_payload = {
+            "classification": job_data.get("classification", {}),
+            "risk_signals": job_data.get("result", [])
+        }
+    elif job_data["status"] == "failed":
+        result_payload = job_data.get("result", {})
+    
     return JobStatusResponse(
         job_id=job_id,
         status=job_data["status"],
-        result=job_data["result"]
+        result=result_payload
     )
 
 if __name__ == "__main__":
@@ -296,7 +408,8 @@ if __name__ == "__main__":
             "search_results": {},
             "escalation_triggered": False,
             "escalation_results": {},
-            "risk_signals": []
+            "risk_signals": [],
+            "classification": {}
         }
         
         final_state = await research_graph.ainvoke(initial_state)
@@ -305,5 +418,8 @@ if __name__ == "__main__":
         print("\nRisk Signals:")
         for signal in final_state['risk_signals']:
             print(f"- {signal}")
+            
+        print("\nClassification:")
+        print(json.dumps(final_state.get('classification', {}), indent=2))
             
     asyncio.run(test())
