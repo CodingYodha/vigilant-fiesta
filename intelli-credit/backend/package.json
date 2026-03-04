@@ -1,0 +1,9 @@
+{
+  "name": "intelli-credit-backend",
+  "dependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
