@@ -1,9 +1,26 @@
+# Core
 fastapi
-uvicorn
+uvicorn[standard]
+python-dotenv
+pydantic
+
+# PDF processing
+PyMuPDF
+thefuzz
+python-Levenshtein
+
+# LLM / AI
+anthropic
+
+# Local DeepSeek-VL2 inference
+unsloth
+Pillow
+torch
+
+# Research agent (existing)
 tavily-python
 langgraph
 langchain-anthropic
-anthropic
+
+# Vector DB (existing)
 qdrant-client
-python-dotenv
-pydantic
