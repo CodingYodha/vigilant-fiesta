@@ -129,28 +129,26 @@ class PageClassificationResult(BaseModel):
 
 
 # =============================================================================
-# INTERNAL — OCR Engine
+# INTERNAL — OCR Engine (Local DeepSeek-VL2)
 # =============================================================================
 
 class OCRPageResult(BaseModel):
-    """OCR output for a single page."""
-    page_number: int
-    markdown_text: str = Field(
-        ..., description="Reconstructed text/table in Markdown format"
+    """OCR output for a single page from local DeepSeek-VL2 inference."""
+    page_number: int = Field(..., description="0-indexed page number")
+    raw_text: str = Field(
+        default="", description="Extracted text/tables in Markdown format"
     )
-    confidence: float = Field(
-        default=0.0, ge=0.0, le=1.0,
-        description="OCR confidence score"
+    has_table: bool = Field(
+        default=False, description="True if pipe characters detected (Markdown table)"
     )
-    tables_detected: int = Field(
-        default=0, description="Number of tables found on this page"
+    confidence: str = Field(
+        default="HIGH",
+        description="HIGH if raw_text > 100 chars, LOW if sparse, FAILED on error"
     )
 
 
-class OCRResult(BaseModel):
-    """Aggregate OCR output for all processed pages."""
-    pages_processed: int
-    results: List[OCRPageResult]
+# OCR document result is a dict: {page_num: OCRPageResult}
+# No wrapper class needed — ocr_document() returns Dict[int, OCRPageResult]
 
 
 # =============================================================================
@@ -217,6 +215,9 @@ class DocumentProcessingOutput(BaseModel):
     status: ProcessingStatus
     doc_type: DocType
     page_classification: Optional[PageClassificationResult] = None
-    ocr_result: Optional[OCRResult] = None
+    ocr_results: Optional[Dict[str, OCRPageResult]] = Field(
+        default=None,
+        description="OCR results keyed by page number (as string for JSON compat)"
+    )
     extraction: Optional[ExtractionResult] = None
     error: Optional[str] = None
