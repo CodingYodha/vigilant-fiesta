@@ -1,164 +1,323 @@
 """
-DeepSeek-OCR integration — vision-language OCR for scanned Indian PDFs.
+DeepSeek-VL2 Local OCR Engine — GPU-based document OCR.
 
-Architecture doc Section 3.1:
-  Standard OCR (Tesseract) fails on Indian financial documents:
-    - Merged-cell tables get split incorrectly
-    - Devanagari script misread
-    - Landscape-rotated balance sheets processed upside-down
+=============================================================================
+ARCHITECTURE DOC: Section 3.1 — DeepSeek-OCR (Indian PDF Problem)
+=============================================================================
+Standard OCR (Tesseract) fails on Indian financial documents:
+  - Merged-cell tables split incorrectly
+  - Devanagari script misread
+  - Landscape-rotated balance sheets processed upside-down
+  - Amounts in ₹, lakh, crore notation mangled
 
-  DeepSeek-OCR 2 is a vision-language model that understands semantic layout,
-  reconstructs tables as Markdown, and handles mixed Hindi-English headers.
+DeepSeek-VL2-tiny (~3B params) is a vision-language model that understands
+document layout semantics.  It reconstructs tables as Markdown, handles mixed
+Hindi-English headers, and reads rotated pages.
 
-This module receives only the *targeted* pages (selected by page_classifier.py)
-and returns structured Markdown text for each.
+VRAM STRATEGY (6 GB constraint):
+  - Unsloth FastVisionModel loads 4-bit quantized → ~2-2.5 GB VRAM
+  - Model loaded ONCE at module import (singleton) — not per-request
+  - threading.Lock() guards inference (GPU not thread-safe)
+  - torch.cuda.empty_cache() after each page frees activation memory
+  - Pages rendered at 150 DPI (not 200) to reduce image tensor size
+
+NO API calls, NO internet, NO API keys.  Entirely offline inference.
+=============================================================================
 """
 
-import base64
+import asyncio
 import logging
 import os
-from typing import List
+import threading
+import time
+from typing import Dict, List
 
-import fitz  # PyMuPDF — used to render page to image
-import httpx
+import fitz  # PyMuPDF
+import torch
+from PIL import Image
+from unsloth import FastVisionModel
 
-from .schemas import OCRPageResult, OCRResult
+from .schemas import OCRPageResult
 
 logger = logging.getLogger("deep_learning.ocr_engine")
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_API_URL = os.getenv(
-    "DEEPSEEK_API_URL",
-    "https://api.deepseek.com/v1/chat/completions",
-)
+# ---------------------------------------------------------------------------
+# Module-level singleton — loaded ONCE at service startup
+# ---------------------------------------------------------------------------
+_model = None
+_tokenizer = None
+_lock = threading.Lock()
 
-# System prompt telling DeepSeek to reconstruct tables as Markdown.
-OCR_SYSTEM_PROMPT = (
-    "You are an expert document OCR system specialised in Indian financial documents. "
-    "Extract all text from the provided page image. Reconstruct any tables as proper "
-    "Markdown tables with headers. Preserve ₹ symbols, lakh/crore notation, and "
-    "mixed Hindi-English column headers exactly as they appear. "
-    "If a table spans the full page, output only the Markdown table."
-)
+# DPI for page rendering: 150 for typed docs, 200 for PARTIAL pages
+_DEFAULT_DPI = 150
+_PARTIAL_DPI = 200
 
 
-async def _render_page_to_base64(file_path: str, page_number: int) -> str:
-    """Render a single PDF page to a PNG image and return as base64 string."""
-    doc = fitz.open(file_path)
-    page = doc[page_number - 1]  # page_number is 1-indexed
-    # 2x zoom for better OCR quality
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    image_bytes = pix.tobytes("png")
-    doc.close()
-    return base64.b64encode(image_bytes).decode("utf-8")
-
-
-async def _call_deepseek_ocr(image_b64: str) -> dict:
+def _load_model():
     """
-    Send a base64-encoded page image to DeepSeek vision API for OCR.
+    Load DeepSeek-VL2-tiny with Unsloth 4-bit quantization.
 
-    Returns the raw API response dict.
+    Runs once at module import.  Unsloth's FastVisionModel handles:
+      - 4-bit quantization (fits in 6 GB VRAM)
+      - Optimized CUDA kernels for faster inference
+      - ~30% less VRAM than standard bitsandbytes
+
+    Env var DEEPSEEK_MODEL_PATH must point to the HuggingFace model
+    directory containing config.json, tokenizer files, and .safetensors.
     """
-    if not DEEPSEEK_API_KEY:
-        logger.warning("DEEPSEEK_API_KEY not set — returning empty OCR result")
-        return {"text": "", "confidence": 0.0, "tables": 0}
+    global _model, _tokenizer
 
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    model_path = os.environ.get(
+        "DEEPSEEK_MODEL_PATH",
+        os.path.join(os.path.dirname(__file__), "models", "deepseek-vl2-tiny"),
+    )
 
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [
-            {"role": "system", "content": OCR_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{image_b64}",
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            "Extract all text and tables from this scanned "
-                            "Indian financial document page. Output as Markdown."
-                        ),
-                    },
-                ],
-            },
-        ],
-        "max_tokens": 4096,
-    }
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            DEEPSEEK_API_URL,
-            json=payload,
-            headers=headers,
+    if not os.path.isdir(model_path):
+        logger.error(
+            f"Model directory not found: {model_path}.  "
+            f"Set DEEPSEEK_MODEL_PATH or download with: "
+            f"huggingface-cli download deepseek-ai/deepseek-vl2-tiny --local-dir {model_path}"
         )
-        response.raise_for_status()
-        data = response.json()
+        return
 
-    # Extract text from response
-    text = ""
-    if "choices" in data and data["choices"]:
-        text = data["choices"][0].get("message", {}).get("content", "")
+    logger.info(f"Loading DeepSeek-VL2-tiny from {model_path} (4-bit, Unsloth)...")
+    load_start = time.time()
 
-    # Count Markdown table separators as a rough table count
-    table_count = text.count("|---")
+    _model, _tokenizer = FastVisionModel.from_pretrained(
+        model_path,
+        load_in_4bit=True,
+        dtype=torch.float16,
+        trust_remote_code=True,
+    )
+    FastVisionModel.for_inference(_model)
 
-    return {"text": text, "confidence": 0.85, "tables": table_count}
+    load_time = time.time() - load_start
+    logger.info(f"✅ Model loaded in {load_time:.1f}s")
 
 
-async def run_ocr(
-    file_path: str,
-    target_pages: List[int],
-) -> OCRResult:
+# Load at import time — runs once when ai-service starts
+_load_model()
+
+
+# ---------------------------------------------------------------------------
+# OCR system prompt
+# ---------------------------------------------------------------------------
+_OCR_SYSTEM_PROMPT = (
+    "You are a financial document OCR engine specialised in Indian corporate documents. "
+    "Extract ALL text from this document image with exact fidelity. "
+    "For tables: reconstruct as Markdown tables preserving all row-column relationships. "
+    "For amounts: preserve exact formatting — ₹, lakh, crore, decimal points. "
+    "For mixed Hindi-English headers: transliterate Hindi to English in [brackets]. "
+    "If the page is rotated landscape, rotate your reading accordingly. "
+    "Do not summarise. Return the complete raw text exactly as it appears."
+)
+
+
+# ---------------------------------------------------------------------------
+# Public functions
+# ---------------------------------------------------------------------------
+
+async def convert_page_to_image(
+    pdf_path: str,
+    page_num: int,
+    is_partial: bool = False,
+) -> Image.Image:
     """
-    Run DeepSeek-OCR on the specified pages of a PDF.
+    Render a single PDF page to a PIL Image.
+
+    Uses PyMuPDF to render at 150 DPI (default) or 200 DPI for PARTIAL pages
+    where garbled text suggests the page needs higher-resolution OCR.
 
     Args:
-        file_path:    Absolute path to the PDF file.
-        target_pages: 1-indexed page numbers to OCR (from page_classifier).
+        pdf_path:   Absolute path to the PDF file.
+        page_num:   0-indexed page number.
+        is_partial: True if the page was classified as PARTIAL (use higher DPI).
 
     Returns:
-        OCRResult with Markdown text for each processed page.
+        PIL.Image in RGB mode.
     """
-    results: List[OCRPageResult] = []
+    dpi = _PARTIAL_DPI if is_partial else _DEFAULT_DPI
+    zoom = dpi / 72.0  # PyMuPDF default is 72 DPI
 
-    for page_num in target_pages:
-        try:
-            image_b64 = await _render_page_to_base64(file_path, page_num)
-            ocr_response = await _call_deepseek_ocr(image_b64)
+    doc = fitz.open(pdf_path)
+    page = doc[page_num]
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    doc.close()
 
-            results.append(
-                OCRPageResult(
-                    page_number=page_num,
-                    markdown_text=ocr_response["text"],
-                    confidence=ocr_response["confidence"],
-                    tables_detected=ocr_response["tables"],
+    return img
+
+
+def _ocr_single_page_sync(
+    page_image: Image.Image,
+    page_context: str,
+    doc_type: str,
+    page_num: int,
+) -> OCRPageResult:
+    """
+    Run OCR inference on a single page image (synchronous, GPU-bound).
+
+    Acquires the global lock before inference and releases after.
+    Calls torch.cuda.empty_cache() to free activation memory between pages.
+
+    Args:
+        page_image:   PIL Image of the rendered page.
+        page_context: Optional context string for the model (e.g. neighboring page text).
+        doc_type:     Document type string for prompt context.
+        page_num:     0-indexed page number (for logging and result).
+
+    Returns:
+        OCRPageResult with raw_text, has_table flag, and confidence level.
+    """
+    if _model is None or _tokenizer is None:
+        logger.error("DeepSeek-VL2 model not loaded — returning empty OCR result")
+        return OCRPageResult(
+            page_number=page_num, raw_text="", has_table=False, confidence="FAILED"
+        )
+
+    user_content = (
+        f"Document type: {doc_type}. Context: {page_context}\n\n"
+        "Extract all text from this page."
+    )
+
+    try:
+        with _lock:
+            start = time.time()
+
+            # Build chat messages in the format DeepSeek-VL2 expects
+            messages = [
+                {"role": "system", "content": _OCR_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": page_image},
+                        {"type": "text", "text": user_content},
+                    ],
+                },
+            ]
+
+            # Apply chat template and tokenize
+            input_text = _tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False
+            )
+            inputs = _tokenizer(
+                input_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            ).to(_model.device)
+
+            # Add image to model inputs if the tokenizer supports it
+            if hasattr(_tokenizer, "process_images"):
+                image_inputs = _tokenizer.process_images([page_image])
+                inputs.update(image_inputs)
+
+            # Greedy decoding — deterministic, faster
+            with torch.no_grad():
+                output_ids = _model.generate(
+                    **inputs,
+                    max_new_tokens=2048,
+                    do_sample=False,
                 )
-            )
-            logger.info(
-                f"OCR page {page_num}: {len(ocr_response['text'])} chars, "
-                f"{ocr_response['tables']} tables"
-            )
 
-        except Exception as e:
-            logger.error(f"OCR failed for page {page_num}: {e}")
-            results.append(
-                OCRPageResult(
-                    page_number=page_num,
-                    markdown_text="",
-                    confidence=0.0,
-                    tables_detected=0,
-                )
-            )
+            # Decode only the new tokens (skip the prompt)
+            generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
+            raw_text = _tokenizer.decode(
+                generated_ids[0], skip_special_tokens=True
+            ).strip()
 
-    ocr_result = OCRResult(pages_processed=len(results), results=results)
-    logger.info(f"OCR complete: {ocr_result.pages_processed} pages processed")
-    return ocr_result
+            elapsed = time.time() - start
+
+            # Free activation memory
+            torch.cuda.empty_cache()
+
+        # Classify result
+        has_table = "|" in raw_text
+        if len(raw_text) > 100:
+            confidence = "HIGH"
+        elif len(raw_text) > 0:
+            confidence = "LOW"
+        else:
+            confidence = "FAILED"
+
+        logger.info(
+            f"OCR page {page_num}: {len(raw_text)} chars, "
+            f"table={'yes' if has_table else 'no'}, "
+            f"confidence={confidence}, time={elapsed:.2f}s"
+        )
+
+        return OCRPageResult(
+            page_number=page_num,
+            raw_text=raw_text,
+            has_table=has_table,
+            confidence=confidence,
+        )
+
+    except Exception as e:
+        logger.error(f"OCR failed for page {page_num}: {e}")
+        torch.cuda.empty_cache()
+        return OCRPageResult(
+            page_number=page_num, raw_text="", has_table=False, confidence="FAILED"
+        )
+
+
+async def ocr_single_page(
+    page_image: Image.Image,
+    page_context: str,
+    doc_type: str,
+    page_num: int,
+) -> OCRPageResult:
+    """
+    Async wrapper around synchronous GPU inference.
+
+    Uses asyncio.to_thread() to run the blocking inference in a thread
+    pool, keeping FastAPI's event loop unblocked.
+    """
+    return await asyncio.to_thread(
+        _ocr_single_page_sync, page_image, page_context, doc_type, page_num
+    )
+
+
+async def ocr_document(
+    pdf_path: str,
+    ocr_pages: List[int],
+    doc_type: str,
+) -> Dict[int, OCRPageResult]:
+    """
+    Run OCR on specified pages of a PDF SEQUENTIALLY.
+
+    The GPU cannot run two inferences in parallel, so pages are processed
+    one at a time.  asyncio.to_thread() ensures the event loop stays
+    responsive between pages.
+
+    Args:
+        pdf_path:   Absolute path to the PDF file.
+        ocr_pages:  List of 0-indexed page numbers to OCR.
+        doc_type:   Document type string for prompt context.
+
+    Returns:
+        Dict mapping page_number → OCRPageResult.
+    """
+    results: Dict[int, OCRPageResult] = {}
+    total_start = time.time()
+
+    logger.info(f"Starting OCR on {len(ocr_pages)} pages from {pdf_path}")
+
+    for page_num in ocr_pages:
+        # Render page to image (150 DPI default)
+        page_image = await convert_page_to_image(pdf_path, page_num)
+
+        # Build context from neighboring pages (if available)
+        page_context = f"Page {page_num + 1} of document"
+
+        # Run inference (sequential — one page at a time)
+        result = await ocr_single_page(page_image, page_context, doc_type, page_num)
+        results[page_num] = result
+
+    total_time = time.time() - total_start
+    logger.info(
+        f"✅ OCR complete: {len(results)} pages in {total_time:.1f}s "
+        f"(avg {total_time / max(len(results), 1):.1f}s/page)"
+    )
+
+    return results

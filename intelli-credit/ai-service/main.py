@@ -26,7 +26,7 @@ from deep_learning.schemas import (
     ProcessingStatus,
 )
 from deep_learning.page_classifier import classify_pages
-from deep_learning.ocr_engine import run_ocr
+from deep_learning.ocr_engine import ocr_document
 from deep_learning.info_extractor import extract_structured_info
 
 load_dotenv()
@@ -95,11 +95,13 @@ async def _process_document(job_id: str, file_path: str, doc_type: DocType):
         logger.info(
             f"[{job_id}] Step 2/4 — OCR on {classification.estimated_ocr_pages} pages"
         )
-        ocr_result = await run_ocr(file_path, classification.ocr_priority_pages)
+        ocr_results = await ocr_document(
+            file_path, classification.ocr_priority_pages, doc_type
+        )
 
-        # 3. Combine text: text-rich pages (PyMuPDF direct) + OCR Markdown
+        # 3. Combine text: digital pages (PyMuPDF) + OCR pages (DeepSeek-VL2)
         logger.info(f"[{job_id}] Step 3/4 — Combining text")
-        combined_text = _combine_page_text(file_path, classification, ocr_result)
+        combined_text = _combine_page_text(classification, ocr_results)
 
         # 4. Structured extraction via Claude
         logger.info(f"[{job_id}] Step 4/4 — Claude structured extraction")
@@ -110,12 +112,14 @@ async def _process_document(job_id: str, file_path: str, doc_type: DocType):
         )
 
         # 5. Build final output and write to disk
+        # Convert int keys to str for JSON serialization
+        ocr_str_keys = {str(k): v for k, v in ocr_results.items()}
         output = DocumentProcessingOutput(
             job_id=job_id,
             status=ProcessingStatus.COMPLETED,
             doc_type=doc_type,
             page_classification=classification,
-            ocr_result=ocr_result,
+            ocr_results=ocr_str_keys,
             extraction=extraction,
         )
 
@@ -138,28 +142,24 @@ async def _process_document(job_id: str, file_path: str, doc_type: DocType):
         )
 
 
-def _combine_page_text(file_path, classification, ocr_result) -> str:
+def _combine_page_text(classification, ocr_results) -> str:
     """
     Merge text from two sources:
-      - DIGITAL pages: text already extracted by page_classifier (digital_text dict)
-      - OCR pages: Markdown returned by DeepSeek
+      - DIGITAL pages: text captured by page_classifier (digital_text dict)
+      - OCR pages: raw_text returned by local DeepSeek-VL2
 
-    No need to re-open the PDF — digital_text was captured during classification.
     Returns a single combined string for Claude extraction.
     """
     parts: list[str] = []
 
-    # Build a lookup for OCR results by page number (0-indexed)
-    ocr_lookup = {r.page_number: r.markdown_text for r in ocr_result.results}
-
     for page_info in classification.pages:
         pn = page_info.page_number  # 0-indexed
 
-        if pn in ocr_lookup and ocr_lookup[pn]:
+        if pn in ocr_results and ocr_results[pn].raw_text:
             # Use OCR output for scanned pages
-            parts.append(f"--- Page {pn} (OCR) ---\n{ocr_lookup[pn]}")
+            parts.append(f"--- Page {pn} (OCR) ---\n{ocr_results[pn].raw_text}")
         elif pn in classification.digital_text:
-            # Use pre-extracted digital text (no PDF re-open needed)
+            # Use pre-extracted digital text
             text = classification.digital_text[pn]
             if text.strip():
                 parts.append(f"--- Page {pn} ---\n{text.strip()}")

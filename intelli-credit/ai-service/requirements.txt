@@ -11,7 +11,11 @@ python-Levenshtein
 
 # LLM / AI
 anthropic
-httpx
+
+# Local DeepSeek-VL2 inference
+unsloth
+Pillow
+torch
 
 # Research agent (existing)
 tavily-python
