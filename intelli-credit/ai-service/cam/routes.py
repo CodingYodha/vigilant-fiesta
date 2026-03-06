@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, ConfigDict
 from supabase import create_client, Client
 
@@ -65,3 +65,54 @@ async def post_officer_notes(request: OfficerNotesRequest):
     except Exception as e:
         logger.error(f"Error processing officer notes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class CAMJobRequest(BaseModel):
+    job_id: str
+
+@router.post("/generate")
+async def process_cam_document(request: CAMJobRequest, background_tasks: BackgroundTasks):
+    from .cam_assembler import generate_cam_pipeline
+    background_tasks.add_task(generate_cam_pipeline, request.job_id)
+    return {"status": "processing", "job_id": request.job_id}
+
+@router.post("/regenerate")
+async def regenerate_cam_document(request: CAMJobRequest, background_tasks: BackgroundTasks):
+    from .cam_assembler import generate_cam_pipeline
+    background_tasks.add_task(generate_cam_pipeline, request.job_id)
+    return {"status": "processing", "job_id": request.job_id}
+
+@router.get("/result/{job_id}")
+async def fetch_cam_result(job_id: str):
+    draft_path = Path(f"/tmp/intelli-credit/{job_id}/cam_draft.json")
+    if not draft_path.exists():
+        return {"status": "processing", "job_id": job_id}
+        
+    try:
+        with open(draft_path, "r") as f:
+            data = json.load(f)
+        return {
+            "status": "ready",
+            "job_id": job_id,
+            "result": data,
+            "download_urls": {
+                "docx": f"/api/v1/cam/download/{job_id}/docx",
+                "pdf": f"/api/v1/cam/download/{job_id}/pdf"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to read CAM draft {job_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse drafted CAM outputs.")
+
+from fastapi.responses import FileResponse
+
+@router.get("/download/{job_id}/{format}")
+async def fetch_cam_downloads(job_id: str, format: str):
+    format = format.lower()
+    if format not in ["docx", "pdf"]:
+        raise HTTPException(status_code=400, detail="Valid formats are 'docx' or 'pdf'")
+        
+    file_path = Path(f"/tmp/intelli-credit/{job_id}/cam_final.{format}")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"The {format.upper()} document is not yet available or failed translation.")
+        
+    return FileResponse(path=file_path, filename=f"{job_id}_Credit_Memo.{format}")
