@@ -5,6 +5,7 @@ Sub-modules:
   - neo4j_client   : Connection singleton, schema constants, constraints, health check
   - graph_writer   : Writes EntityExtraction into Neo4j (MERGE/upsert)
   - fuzzy_matcher  : V12 fix — fuzzy entity-to-transaction matching
+  - fraud_detector : Cypher-based cross-application fraud detection
 """
 
 from .neo4j_client import (
@@ -37,6 +38,16 @@ from .fuzzy_matcher import (
     TransactionLinkResult,
 )
 
+from .fraud_detector import (
+    run_all_fraud_checks,
+    detect_related_party_director_overlap,
+    detect_historical_rejection,
+    detect_shell_supplier_network,
+    detect_circular_ownership,
+    FraudFlag,
+    FraudDetectionResult,
+)
+
 __all__ = [
     "get_driver",
     "close_driver",
@@ -52,6 +63,9 @@ __all__ = [
     "MatchConfidence",
     "EntityMatchResult",
     "TransactionLinkResult",
+    "run_all_fraud_checks",
+    "FraudFlag",
+    "FraudDetectionResult",
     "PERSON",
     "COMPANY",
     "LOAN",
