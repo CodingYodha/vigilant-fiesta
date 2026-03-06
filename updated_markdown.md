@@ -25,7 +25,7 @@
   - [V2 — Prompt Injection via Officer Notes Portal](#v2--prompt-injection)
   - [V3 — FinBERT Domain Mismatch](#v3--finbert-mismatch)
   - [V4 — LLM Numerical Hallucination](#v4--llm-hallucination)
-  - [V5 — NetworkX Graph Ephemerality](#v5--networkx-ephemerality)
+  - [V5 — Migrated to Neo4j: Persistent Graph for Cross-Application Fraud Detection](#v5--neo4j-persistent-graph)
   - [V6 — DeepSeek-OCR Latency Bottleneck](#v6--ocr-latency)
   - [V7 — Databricks Cold-Start Demo Risk](#v7--databricks-cold-start)
   - [V8 — Naïve Round-Trip Detection](#v8--round-trip-detection)
@@ -260,7 +260,7 @@ This module is inspired directly by production systems used by RegTech companies
 This is endemic in Indian SME lending. A promoter takes a loan for his main company, then siphons the money to his shell companies or family-owned firms through artificial transactions. The main company's books show the payment as a legitimate business expense. The bank sees no immediate red flag because the financial ratios of the main company look acceptable — until the loan defaults because the money was never actually used for business purposes.
 
 ## How the Entity Graph Catches This
-After NER extracts all entity names from the Annual Report, the Entity Graph Builder constructs a relationship network in NetworkX (Python's in-memory graph library):
+After NER extracts all entity names from the Annual Report, the Entity Graph Builder constructs a relationship network in Neo4j — a native graph database purpose-built for entity relationship traversal:
 
 
 | **Graph Node Type** | **Example** | **Source Document** |
@@ -464,7 +464,7 @@ Character risk — the qualitative, often unquantifiable risk signals that emerg
 | Fraud Keywords in News | Research Agent — FinBERT text | Each ED/CBI mention: -3 pts |
 | Negative Promoter News Sentiment | Research Agent — FinBERT score | Score \< -0.5: -2pts |
 | Governance Issues (auditor qualification) | RAG — Auditor Notes extraction | Qualified opinion: -2 pts |
-| Related Party Anomalies | Entity Graph — NetworkX | Shell supplier detected: -3 pts |
+| Related Party Anomalies | Entity Graph — Neo4j | Shell supplier detected: -3 pts |
 
 **7.6 Final Aggregation and Decision Logic**
 
@@ -547,7 +547,7 @@ Every single claim in the final CAM must cite its source. This is inspired by Mo
 | 'Active NCLT case against promoter' | NCLT Mumbai Case CP/2022/MB/1847 | LangGraph Agent — Serper deep search |
 | 'GST-Bank variance 22%' | GSTR-3B (Jul-Sep 2024) vs SBI bank statement | Go Service fraud analysis |
 | 'Sector sentiment: HEADWIND (-0.64)' | 8 sector news articles, FinBERT analysis | LangGraph Agent — FinBERT node |
-| 'Related party supplier detected' | Annual Report Note 34, Entity Graph analysis | Entity Graph — NetworkX |
+| 'Related party supplier detected' | Annual Report Note 34, Entity Graph analysis | Entity Graph — Neo4j |
 | 'Factory at 40% capacity' | Credit Officer field note, submitted 04-Mar-2025 | User input — Officer Notes Portal |
 
 <a id="9-officer-notes"></a>
@@ -641,7 +641,7 @@ The score adjustment happens live in the UI — the judge can type a note and wa
 | Research (Broad) | Tavily API | 5 parallel base searches | Designed for LLM agent use cases |
 | Research (Deep) | Serper API | Targeted fraud/legal investigation search | Raw Google Search API for legal portals |
 | Sector Sentiment | FinBERT (HuggingFace) | Financial news sentiment scoring | Finance-specific, numeric output for ML |
-| Entity Graph | NetworkX (Python) | Related-party relationship mapping | In-memory, zero infra, fast graph traversal |
+| Entity Graph | Neo4j (Docker :7474) | Persistent graph DB for related-party mapping | Native graph traversal, persists across all applications, Cypher query language |
 | Agent Framework | LangGraph | Stateful conditional research flow | Native support for escalation branching |
 | Database | Supabase (Postgres) | Jobs, sessions, results, audit logs | Managed Postgres, real-time capabilities |
 | File Storage | Supabase Storage | Raw PDFs, generated CAM docs | Integrated with Supabase DB |
@@ -735,19 +735,21 @@ When Claude extracts financial figures from RAG-retrieved markdown tables, it is
 | **AI Lead** | **ML Engineer** | **Web Dev** |
 | Add null-return instruction to extraction prompt. Build cross-verification logic: Claude vs Go extracted values. | Implement LOW_CONFIDENCE feature handling — use Go value as primary source. | Add HIGH/LOW confidence badges next to financial figures in dashboard. |
 
-**V5 — NetworkX Graph Ephemerality (No Cross-Application Fraud)**
+**V5 — Migrated to Neo4j: Persistent Graph for Cross-Application Fraud Detection**
 
-NetworkX builds the entity graph in-memory within a single API request. When the request ends, the graph is destroyed. The system can only detect related-party fraud within a single company's uploaded documents. It completely misses the most dangerous pattern: a promoter whose other company defaulted with another bank 6 months ago applies for a new loan. Because that previous graph was never persisted, the connection is invisible. Real Indian financial fraud — spanning multiple corporate entities, multiple banks, multiple years — is entirely undetectable by an ephemeral in-memory graph.
+The original design used NetworkX — a Python in-memory graph library — for entity relationship mapping. NetworkX builds the graph within a single API request and destroys it when the request ends. The system could only detect related-party fraud within a single company's uploaded documents. It completely missed the most dangerous pattern in Indian lending: a promoter whose other company defaulted with another bank 6 months ago applies for a new loan under a different entity. Because the previous graph was never persisted, the connection was invisible. Real Indian financial fraud spans multiple corporate entities, multiple banks, and multiple years — entirely undetectable by an ephemeral in-memory graph.
+
+**Neo4j replaces NetworkX entirely.**
 
 
-> **VULNERABILITY:** NetworkX is ephemeral — destroyed after each request. Cannot detect cross-application fraud: a promoter whose other company defaulted 6 months ago. Network-wide fraud rings (common in Indian consortium lending frauds) are completely invisible. | 
+> **VULNERABILITY:** Original NetworkX design was ephemeral — destroyed after each request. Could not detect cross-application fraud or network-wide fraud rings. Neo4j is now used: a persistent native graph database that retains all entity relationships across every application ever processed, enabling true network-level fraud detection. | 
 
 | --- | --- | --- |
 
-> **THE FIX:** A persistent entity registry is built in Supabase Postgres. Every time NER extracts entities (promoter names, company names, DINs, CINs), they are upserted into an 'entities' table with their relationships. Before building the NetworkX graph for a new application, the system queries Supabase for historical matches: 'Has this DIN appeared in a previous application? Was that application rejected? Did that company have fraud flags?' NetworkX is still used for in-memory graph traversal and visualization — but it is now seeded with historical Supabase data, not just the current PDF. Neo4j remains the production-grade upgrade path. | 
+> **THE FIX:** NetworkX is replaced by Neo4j — a native graph database running in Docker alongside the other services. Every time NER extracts entities (promoter names, company names, DINs, CINs, supplier names), they are written as nodes and relationships into Neo4j using the Cypher query language. Because Neo4j persists all data across requests and across applications, every new loan application is checked against the full historical graph: a single Cypher query reveals whether a director DIN has appeared in a previously rejected application, whether a supplier entity was flagged as a shell company for a different borrower, or whether two seemingly unrelated companies share a hidden common director. The graph grows with every application processed, making fraud detection progressively smarter. The UI entity graph visualization reads directly from Neo4j. NetworkX is removed entirely. | 
 
 | **AI Lead** | **ML Engineer** | **Web Dev** |
-| Build Supabase entities table schema. Implement upsert-on-extract and historical query in entity graph builder. | No action required. | Add historical match alert in UI: 'Director DIN XX123 appeared in rejected application REF: APP-2024-089'. |
+| Replace NetworkX with Neo4j. Implement Cypher node/relationship writes on NER extract. Build historical match query before each new graph build. | Add neo4j driver to requirements.txt. Add neo4j:7474 to docker-compose.yml. | Add historical match alert in UI: 'Director DIN XX123 appeared in rejected application REF: APP-2024-089'. Add Neo4j browser link for full graph exploration. |
 
 <a id="v6--ocr-latency"></a>
 ## V6 — DeepSeek-OCR Latency Bottleneck on Large Scanned PDFs
@@ -902,7 +904,7 @@ The ML scoring engine is restructured into two independent layers that operate i
 | **V2** | Prompt injection — Officer Notes | Security | XML sandbox + injection detection + -50pt penalty + Supabase audit log | AI Lead | CRITICAL DEMO | Live hack demo moment |
 | **V3** | FinBERT India context mismatch | AI / ML | FinBERT removed. Claude sentiment with Indian regulatory mappings | AI Lead | YES | Fixes core scoring accuracy |
 | **V4** | LLM numerical hallucination | AI / ML | Dual-source verification: Claude vs Go cross-check + LOW_CONFIDENCE flag | AI Lead + ML | NO | Prevents silent ML corruption |
-| **V5** | NetworkX graph ephemeral | Data Eng. | Supabase entity registry persists all NER outputs for cross-app fraud detection | AI Lead | YES | Catches historical fraud rings |
+| **V5** | Migrated NetworkX → Neo4j persistent graph | Data Eng. | Neo4j in Docker — persists all entities across applications, Cypher queries detect cross-app fraud rings | AI Lead | YES | Catches historical fraud rings across all applications |
 | **V6** | DeepSeek-OCR latency | Pipeline | Smart page targeting: PyMuPDF scan first, OCR only 3-6 critical pages | ML Eng. | NO | Keeps pipeline under 10 min |
 | **V7** | Databricks cold-start failure | Demo Risk | Pre-warm protocol + DuckDB fallback with 8-second timeout | ML Eng. | YES | Fault tolerance demo |
 | **V8** | Naive round-trip detection | Biz Logic | 7-day rolling window aggregates + related-party destination tracking | ML Eng. | NO | Catches sophisticated fraud |
