@@ -35,6 +35,7 @@ from rag import (
     qdrant_health_check,
 )
 from rag.qdrant_client import close_client as close_qdrant
+from rag.routes import router as rag_router
 
 load_dotenv()
 
@@ -101,6 +102,9 @@ app.add_middleware(
 
 # Include entity graph router
 app.include_router(entity_graph_router)
+
+# Include RAG router
+app.include_router(rag_router)
 
 # Shared volume base path (Docker mount)
 BASE_PATH = Path("/tmp/intelli-credit")
