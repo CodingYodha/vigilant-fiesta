@@ -27,11 +27,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client.models import PointStruct, FilterSelector, Filter, FieldCondition, MatchValue
 
 from .qdrant_client import get_client, COLLECTION_NAME
-from .embedder import embed_chunks_batched, ChunkInput
+from .embedder import embed_chunks_batched
+from .schemas import ChunkInput, IngestResult
 
 logger = logging.getLogger("rag.ingestor")
 
@@ -41,31 +41,6 @@ _BASE_PATH = Path("/tmp/intelli-credit")
 # Qdrant upsert batch size
 QDRANT_UPSERT_BATCH = 100
 
-
-# =============================================================================
-# IngestResult schema
-# =============================================================================
-
-class IngestResult(BaseModel):
-    """Result of ingesting chunks for a single doc_type."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    job_id: str = Field(..., description="Job ID")
-    doc_type: str = Field(..., description="Document type processed")
-    chunks_read: int = Field(default=0, description="Chunks read from chunks.json")
-    chunks_embedded: int = Field(default=0, description="Chunks successfully embedded")
-    chunks_stored: int = Field(default=0, description="Chunks stored in Qdrant")
-    high_priority_count: int = Field(default=0, description="Chunks with HIGH priority")
-    medium_priority_count: int = Field(default=0, description="Chunks with MEDIUM priority")
-    low_priority_count: int = Field(default=0, description="Chunks with LOW priority")
-    status: str = Field(
-        default="success",
-        description="'success', 'skipped', 'partial', or 'failed'",
-    )
-    error: Optional[str] = Field(
-        default=None, description="Error message if status is 'failed'"
-    )
 
 
 # =============================================================================

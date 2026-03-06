@@ -7,6 +7,7 @@ Sub-modules:
   - ingestor      : Reads Go service chunks, embeds, stores in Qdrant
   - retriever     : Query-time search, extraction target mapping, prompt formatting
   - extractor     : Claude-based structured extraction from retrieved chunks
+  - schemas       : Centralized Pydantic v2 models for all RAG data contracts
 """
 
 from .qdrant_client import (
@@ -46,6 +47,12 @@ from .extractor import (
     run_full_extraction,
     RAGExtractionResult,
 )
+from .schemas import (
+    GoChunk,
+    ExtractedValue,
+    QueryRequest,
+    QueryResponse,
+)
 
 __all__ = [
     "get_client",
@@ -75,4 +82,8 @@ __all__ = [
     "extract_rating_intelligence",
     "run_full_extraction",
     "RAGExtractionResult",
+    "GoChunk",
+    "ExtractedValue",
+    "QueryRequest",
+    "QueryResponse",
 ]

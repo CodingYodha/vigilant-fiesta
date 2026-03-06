@@ -32,11 +32,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
 from anthropic import AsyncAnthropic
 
 from model_config import CLAUDE_RAG_EXTRACTION_MODEL
 from .retriever import retrieve_for_extraction, format_chunks_for_prompt
+from .schemas import (
+    FinancialSummaryExtraction,
+    QualitativeExtraction,
+    CovenantExtraction,
+    RatingExtraction,
+    RAGExtractionResult,
+)
 
 logger = logging.getLogger("rag.extractor")
 
@@ -174,54 +180,10 @@ Return ONLY valid JSON:
 
 
 # =============================================================================
-# Pydantic response models
+# Pydantic response models — imported from rag/schemas.py
+# (FinancialSummaryExtraction, QualitativeExtraction, CovenantExtraction,
+#  RatingExtraction, RAGExtractionResult)
 # =============================================================================
-
-class FinancialSummaryExtraction(BaseModel):
-    """Structured financial data extracted by Claude from RAG chunks."""
-    model_config = ConfigDict(from_attributes=True)
-    data: Dict[str, Any] = Field(default_factory=dict)
-    extraction_model: str = Field(default="")
-    status: str = Field(default="success")
-
-
-class QualitativeExtraction(BaseModel):
-    """Qualitative signals: auditor notes, litigation, management commentary."""
-    model_config = ConfigDict(from_attributes=True)
-    data: Dict[str, Any] = Field(default_factory=dict)
-    extraction_model: str = Field(default="")
-    status: str = Field(default="success")
-
-
-class CovenantExtraction(BaseModel):
-    """Covenant and collateral information."""
-    model_config = ConfigDict(from_attributes=True)
-    data: Dict[str, Any] = Field(default_factory=dict)
-    extraction_model: str = Field(default="")
-    status: str = Field(default="success")
-
-
-class RatingExtraction(BaseModel):
-    """Rating agency intelligence."""
-    model_config = ConfigDict(from_attributes=True)
-    data: Dict[str, Any] = Field(default_factory=dict)
-    extraction_model: str = Field(default="")
-    status: str = Field(default="success")
-
-
-class RAGExtractionResult(BaseModel):
-    """Combined result from all 4 extraction functions."""
-    model_config = ConfigDict(from_attributes=True)
-
-    job_id: str = Field(...)
-    financial_summary: Optional[FinancialSummaryExtraction] = None
-    qualitative_signals: Optional[QualitativeExtraction] = None
-    covenant_collateral: Optional[CovenantExtraction] = None
-    rating_intelligence: Optional[RatingExtraction] = None
-    extraction_model: str = Field(default=CLAUDE_RAG_EXTRACTION_MODEL)
-    status: str = Field(default="success")
-    errors: List[str] = Field(default_factory=list)
-    extracted_at: str = Field(default="")
 
 
 # =============================================================================
