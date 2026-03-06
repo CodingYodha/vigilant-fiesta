@@ -20,32 +20,13 @@ Claude prompts, with source attribution for every chunk.
 import logging
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from .qdrant_client import get_client, COLLECTION_NAME
 from .embedder import embed_single
+from .schemas import RetrievedChunk
 
 logger = logging.getLogger("rag.retriever")
-
-
-# =============================================================================
-# RetrievedChunk schema
-# =============================================================================
-
-class RetrievedChunk(BaseModel):
-    """A single chunk retrieved from Qdrant with its similarity score."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    chunk_text: str = Field(..., description="Raw text of the chunk")
-    score: float = Field(..., description="Cosine similarity score (0-1)")
-    page_num: int = Field(default=0, description="Page number in source document")
-    section_name: str = Field(default="", description="Section name from chunker")
-    doc_type: str = Field(default="", description="Document type")
-    chunk_index: int = Field(default=0, description="Position within document")
-    embed_priority: str = Field(default="MEDIUM", description="Embedding priority")
-    source_file: str = Field(default="", description="Original filename")
 
 
 # =============================================================================

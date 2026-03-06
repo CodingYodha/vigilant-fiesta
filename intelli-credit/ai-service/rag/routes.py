@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from .ingestor import ingest_all_documents, delete_job_chunks, IngestResult
+from .ingestor import ingest_all_documents, delete_job_chunks
 from .extractor import run_full_extraction
 from .retriever import retrieve_chunks
+from .schemas import IngestRequest, IngestResult, QueryRequest, RetrievedChunk
 
 logger = logging.getLogger("rag.routes")
 
@@ -44,34 +45,12 @@ router = APIRouter(
 
 
 # =============================================================================
-# Request / Response models
+# Local request model (too simple for schemas.py)
 # =============================================================================
-
-class IngestRequest(BaseModel):
-    job_id: str = Field(..., description="Loan application job ID")
-    company_name: str = Field(..., description="Borrower company name")
-    doc_types: List[str] = Field(
-        ...,
-        description="Doc types to ingest: 'annual_report', 'rating_report', 'legal_notice', 'gst_filing'",
-    )
-
 
 class ExtractRequest(BaseModel):
-    job_id: str = Field(..., description="Loan application job ID")
-
-
-class QueryRequest(BaseModel):
-    job_id: str = Field(..., description="Loan application job ID")
-    query: str = Field(..., description="Free-form question to search for")
-    top_k: int = Field(default=5, ge=1, le=20, description="Number of results")
-    doc_type_filter: Optional[str] = Field(
-        default=None, description="Filter to a specific doc_type (null = all)"
-    )
-
-
-# =============================================================================
-# Background tasks
-# =============================================================================
+    """POST /api/v1/rag/extract request body."""
+    job_id: str
 
 async def _run_ingest_background(
     job_id: str,

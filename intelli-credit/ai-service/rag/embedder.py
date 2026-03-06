@@ -19,12 +19,12 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 import httpx
 
 from model_config import JINA_EMBEDDING_MODEL
+from .schemas import ChunkInput, ChunkEmbedding
 
 logger = logging.getLogger("rag.embedder")
 
@@ -36,30 +36,6 @@ JINA_API_URL = "https://api.jina.ai/v1/embeddings"
 JINA_MODEL = JINA_EMBEDDING_MODEL  # re-export for backward compatibility
 BATCH_SIZE = 32          # max texts per API call
 INTER_BATCH_DELAY = 0.5  # seconds between batches
-
-
-# =============================================================================
-# Data classes
-# =============================================================================
-
-@dataclass
-class ChunkInput:
-    """Input to the batch embedder: text + metadata."""
-    chunk_text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ChunkEmbedding:
-    """Output from the batch embedder: text + vector + metadata."""
-    chunk_text: str
-    vector: List[float]
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-# =============================================================================
-# Core embedding function
-# =============================================================================
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
     """
