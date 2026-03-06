@@ -6,6 +6,7 @@ Sub-modules:
   - graph_writer   : Writes EntityExtraction into Neo4j (MERGE/upsert)
   - fuzzy_matcher  : V12 fix — fuzzy entity-to-transaction matching
   - fraud_detector : Cypher-based cross-application fraud detection
+  - graph_exporter : Frontend-ready {nodes, edges} JSON export
 """
 
 from .neo4j_client import (
@@ -48,6 +49,13 @@ from .fraud_detector import (
     FraudDetectionResult,
 )
 
+from .graph_exporter import (
+    export_graph_for_ui,
+    GraphNode,
+    GraphEdge,
+    GraphExport,
+)
+
 __all__ = [
     "get_driver",
     "close_driver",
@@ -66,6 +74,10 @@ __all__ = [
     "run_all_fraud_checks",
     "FraudFlag",
     "FraudDetectionResult",
+    "export_graph_for_ui",
+    "GraphNode",
+    "GraphEdge",
+    "GraphExport",
     "PERSON",
     "COMPANY",
     "LOAN",
