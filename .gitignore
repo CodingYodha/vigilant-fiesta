@@ -2,3 +2,5 @@
 .env
 **/deep_learning/models
 node_modules
+intelli-credit/miniconda.sh
+intelli-credit/qdrant
