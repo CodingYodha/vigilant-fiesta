@@ -4,3 +4,5 @@
 node_modules
 intelli-credit/miniconda.sh
 intelli-credit/qdrant
+intelli-credit\qdrant
+intelli-credit\miniconda.sh
