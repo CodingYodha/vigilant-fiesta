@@ -1,4 +1,4 @@
-﻿# INTELLI-CREDIT — AI-Powered Corporate Credit Decisioning
+﻿# BLUE-FIN — AI-Powered Corporate Credit Decisioning
 
 An end-to-end credit appraisal platform for Indian banks, combining Go-based PDF parsing, Python LightGBM scoring, LangGraph research agents, and a React dashboard for credit officers.
 
@@ -7,7 +7,7 @@ An end-to-end credit appraisal platform for Indian banks, combining Go-based PDF
 ## Project Structure
 
 ```
-intelli-credit/
+blue-fin/
 ├── frontend/          React 18 + Vite (plain JS + JSX)
 ├── backend/           Node.js API server (Hono framework, ESM)
 ├── go-service/        Go — concurrent PDF parser + fraud math engine
@@ -16,13 +16,13 @@ intelli-credit/
 └── tmp/               Shared local folder for file passing between services
 ```
 
-Services communicate over HTTP on localhost. **Files are never sent over HTTP** — they are written to `./tmp/intelli-credit/{job_id}/` and paths are shared between services.
+Services communicate over HTTP on localhost. **Files are never sent over HTTP** — they are written to `./tmp/blue-fin/{job_id}/` and paths are shared between services.
 
 ---
 
 ## How to Run (No Docker — all local)
 
-Run each in a separate terminal from the `intelli-credit/` directory.
+Run each in a separate terminal from the `blue-fin/` directory.
 
 ### Terminal 1 — Go Service (port 8081)
 
@@ -64,7 +64,7 @@ npm run dev
 
 1. Create a new project at [supabase.com](https://supabase.com)
 2. Open the **SQL Editor** and run the contents of `backend/supabase/migrations/001_initial.sql`
-3. Go to **Storage** → create a bucket named `intelli-credit-uploads` (set to public)
+3. Go to **Storage** → create a bucket named `blue-fin-uploads` (set to public)
 4. Copy your project **URL** and **service role key** into `backend/.env`:
    ```
    SUPABASE_URL=https://xxxx.supabase.co
@@ -76,7 +76,7 @@ npm run dev
 ## How the Pipeline Works
 
 1. **Upload** — Credit officer uploads Annual Report PDF + GST Excel + Bank Statement CSV via the web UI
-2. **Job creation** — Node backend creates a Job UUID, saves files to `./tmp/intelli-credit/{job_id}/`
+2. **Job creation** — Node backend creates a Job UUID, saves files to `./tmp/blue-fin/{job_id}/`
 3. **PDF parsing** — Go service parses PDFs concurrently; digital PDFs use PyMuPDF, scanned pages are flagged for OCR
 4. **Fraud math** — Go service computes: GST-Bank variance, GSTR-2A/3B mismatch, round-trip detection, cash deposit ratio
 5. **OCR + NER** — Python AI: DeepSeek-OCR on scanned pages → NER extracts entities → RAG embeds chunks into vector store
@@ -117,7 +117,7 @@ SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_KEY=your_supabase_service_key
 GO_SERVICE_URL=http://localhost:8081
 AI_SERVICE_URL=http://localhost:8000
-SHARED_TMP_PATH=./tmp/intelli-credit
+SHARED_TMP_PATH=./tmp/blue-fin
 ```
 
 ### `frontend/.env`
