@@ -1,6 +1,7 @@
 import axios from "axios";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const configuredBaseUrl = import.meta.env.VITE_API_URL?.trim();
+const BASE_URL = configuredBaseUrl || "";
 
 const api = axios.create({ baseURL: BASE_URL, timeout: 30000 });
 
@@ -107,7 +108,9 @@ export async function listJobs() {
 }
 
 export function createSSEConnection(jobId, onEvent) {
-  const url = BASE_URL + "/api/analysis/" + jobId + "/stream";
+  const url = BASE_URL
+    ? BASE_URL + "/api/analysis/" + jobId + "/stream"
+    : "/api/analysis/" + jobId + "/stream";
   const source = new EventSource(url);
   let connected = false;
   let done = false;
