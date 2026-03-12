@@ -29,7 +29,10 @@ export async function logout() {
 }
 
 export async function createJob(companyName, userEmail) {
-  const res = await api.post("/api/jobs", { company_name: companyName, user_email: userEmail });
+  const res = await api.post("/api/jobs", {
+    company_name: companyName,
+    user_email: userEmail,
+  });
   return res.data;
 }
 
@@ -67,6 +70,35 @@ export async function getCAM(jobId) {
 export async function regenerateCAM(jobId) {
   const res = await api.post("/api/cam/" + jobId + "/regenerate");
   return res.data;
+}
+
+export async function downloadCAM(jobId, format) {
+  const res = await api.get(`/api/cam/${jobId}/download/${format}`, {
+    responseType: "blob",
+    timeout: 60000,
+  });
+  const mime =
+    format === "pdf"
+      ? "application/pdf"
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const blob = new Blob([res.data], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${jobId}_Credit_Memo.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export async function getCAMPdfBlobUrl(jobId) {
+  const res = await api.get(`/api/cam/${jobId}/download/pdf?preview=true`, {
+    responseType: "blob",
+    timeout: 60000,
+  });
+  const blob = new Blob([res.data], { type: "application/pdf" });
+  return URL.createObjectURL(blob);
 }
 
 export async function listJobs() {
